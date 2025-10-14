@@ -34,7 +34,7 @@ def find_different_units(
     print(f"Comparing units with SSIM threshold: {threshold}")
 
     num_comparisons = len(image_units) * (len(image_units) - 1) // 2
-    print(f"total comparision to be done: {num_comparisons}")
+    print(f"Total comparision to be done: {num_comparisons}")
 
     print("This may take a while...")
 
@@ -76,9 +76,11 @@ def find_different_units(
             pos2 = positions[pair_indices[1]]
             score = ssim_scores[idx_in_batch].item()
             different_pairs.append((pos1, pos2, score))
+            print(f"  - Unit at {pos1} and Unit at {pos2}, SSIM: {score:.4f}")
 
     end_time = time.time()
     elapsed_time = end_time - start_time
+    print(f"Total comparision to be done: {num_comparisons}")
     print(f"Total comparison time: {elapsed_time:.2f} seconds.")
 
     print(f"Comparsion per second: {num_comparisons/elapsed_time:.2f}.")
