@@ -4,15 +4,15 @@ This program divides an image into 512x512 units and compares them using the Str
 
 ## Features
 
--   Divides any given image into 512x512 pixel units.
--   Compares each unit with every other unit.
--   Uses SSIM to quantify the similarity between units.
--   Reports pairs of units whose SSIM score is below a specified threshold.
--   Command-line interface for ease of use.
+- Divides any given image into 512x512 pixel units.
+- Compares each unit with every other unit.
+- Uses SSIM to quantify the similarity between units.
+- Reports pairs of units whose SSIM score is below a specified threshold.
+- Command-line interface for ease of use.
 
 ## Prerequisites
 
--   Python 3.6+
+- Python 3.6+
 
 ## Setup
 
@@ -37,3 +37,4 @@ Run the main script from the `image_comparator` directory, providing the path to
 
 ```bash
 python main.py /path/to/your/image.png
+```

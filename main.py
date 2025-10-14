@@ -1,5 +1,6 @@
 import argparse
 import itertools
+import time
 from typing import Tuple
 
 from utils.image_processor import compare_units, divide_image_into_units
@@ -23,21 +24,30 @@ def find_different_units(
         return
 
     print(f"Divided image into {len(image_units)} units.")
+    print(f"Comparing units with SSIM threshold: {threshold}")
+    print(f"total comparision to be done: {len(image_units)*(len(image_units)-1)//2}")
+
+    print("This may take a while...")
 
     different_pairs = []
 
+    start_time = time.time()
     for (pos1, unit1), (pos2, unit2) in itertools.combinations(image_units, 2):
         ssim_score = compare_units(unit1, unit2)
         if ssim_score < threshold:
             pair_info = (pos1, pos2, ssim_score)
             different_pairs.append(pair_info)
-            print(
-                f"Difference found between unit at {pos1} and unit at {pos2}. "
-                f"SSIM: {ssim_score:.4f}"
-            )
+
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"Total comparison time: {elapsed_time:.2f} seconds.")
 
     if not different_pairs:
         print("No significant differences found between any units.")
+    else:
+        print(f"\nFound {len(different_pairs)} pairs with SSIM below {threshold}:")
+        # for pos1, pos2, ssim_score in different_pairs:
+        #     print(f"  - Unit at {pos1} and Unit at {pos2}, SSIM: {ssim_score:.4f}")
 
 
 def main() -> None:
