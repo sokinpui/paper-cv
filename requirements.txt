@@ -1,3 +1,4 @@
 Pillow
-scikit-image
 numpy
+torch
+pytorch-msssim

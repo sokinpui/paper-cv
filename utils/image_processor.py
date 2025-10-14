@@ -1,7 +1,6 @@
 from typing import Tuple, List
 from PIL import Image
 import numpy as np
-from skimage.metrics import structural_similarity as ssim
 
 ImageUnit = Tuple[Tuple[int, int], np.ndarray]
 
@@ -41,19 +40,3 @@ def divide_image_into_units(
             image_units.append(((i, j), np.array(unit)))
 
     return image_units
-
-
-def compare_units(unit1: np.ndarray, unit2: np.ndarray) -> float:
-    """
-    Compares two image units using Structural Similarity Index (SSIM).
-
-    Args:
-        unit1 (np.array): The first image unit.
-        unit2 (np.array): The second image unit.
-
-    Returns:
-        float: The SSIM score.
-    """
-    # For uint8 images, the data range is 255. Using a fixed data_range
-    # helps stabilize SSIM calculation, especially for low-variance units.
-    return ssim(unit1, unit2, data_range=255.0)

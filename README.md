@@ -9,10 +9,12 @@ This program divides an image into 512x512 units and compares them using the Str
 - Uses SSIM to quantify the similarity between units.
 - Reports pairs of units whose SSIM score is below a specified threshold.
 - Command-line interface for ease of use.
+- GPU-accelerated comparison for significant speedup.
 
 ## Prerequisites
 
 - Python 3.6+
+- An NVIDIA GPU with CUDA is recommended for GPU acceleration.
 
 ## Setup
 
@@ -30,6 +32,8 @@ This program divides an image into 512x512 units and compares them using the Str
     ```bash
     pip install -r requirements.txt
     ```
+
+    **Note on PyTorch:** The `torch` package in `requirements.txt` is for a CPU-only version. For GPU support, please install the appropriate version of PyTorch for your system by following the instructions on the [official PyTorch website](https://pytorch.org/get-started/locally/).
 
 ## Usage
 
