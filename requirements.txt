@@ -2,3 +2,5 @@ Pillow
 numpy
 torch
 pytorch-msssim
+tqdm
+numba

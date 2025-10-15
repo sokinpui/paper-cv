@@ -1,19 +1,67 @@
 import argparse
 import concurrent.futures
 import itertools
-import os
 import multiprocessing
-from functools import partial
+import os
 import shutil
 import time
+import numba
+from functools import partial
 from typing import List, Tuple
 
 import numpy as np
 import torch
 from PIL import Image
 from pytorch_msssim import SSIM
+from tqdm import tqdm
 
 from utils.image_processor import divide_image_into_units
+
+
+@numba.jit(nopython=True)
+def _collect_diff_pairs_from_batch_np(
+    batch_indices_np, positions_np, ssim_scores_np, below_threshold_indices_np
+):
+    """
+    Collects different pairs from a batch of comparisons using Numba for acceleration.
+    This function is designed to be JIT-compiled by Numba in nopython mode.
+
+    Args:
+        batch_indices_np (np.ndarray): Numpy array of pair indices for the batch.
+        positions_np (np.ndarray): Numpy array of all unit positions.
+        ssim_scores_np (np.ndarray): Numpy array of SSIM scores for the batch.
+        below_threshold_indices_np (np.ndarray): Numpy array of indices within the
+                                                 batch that are below the threshold.
+
+    Returns:
+        np.ndarray: A numpy array where each row represents a different pair:
+                    [idx1, idx2, pos1_row, pos1_col, pos2_row, pos2_col, score]
+    """
+    num_found = len(below_threshold_indices_np)
+    # (idx1, idx2, pos1_row, pos1_col, pos2_row, pos2_col, score)
+    results = np.empty((num_found, 7), dtype=np.float64)
+
+    for i in range(num_found):
+        idx_in_batch = below_threshold_indices_np[i]
+
+        pair_indices = batch_indices_np[idx_in_batch]
+        idx1 = pair_indices[0]
+        idx2 = pair_indices[1]
+
+        pos1 = positions_np[idx1]
+        pos2 = positions_np[idx2]
+
+        score = ssim_scores_np[idx_in_batch]
+
+        results[i, 0] = idx1
+        results[i, 1] = idx2
+        results[i, 2] = pos1[0]
+        results[i, 3] = pos1[1]
+        results[i, 4] = pos2[0]
+        results[i, 5] = pos2[1]
+        results[i, 6] = score
+
+    return results
 
 
 def save_different_pairs(
@@ -51,45 +99,50 @@ def save_different_pairs(
     print("Done saving.")
 
 
-def _compare_pairs_worker(
-    indices_chunk: List[Tuple[int, int]],
+def _compare_batch_worker(
+    batch_indices: List[Tuple[int, int]],
     units_tensor: torch.Tensor,
-    positions: List[Tuple[int, int]],
+    positions_np: np.ndarray,
     threshold: float,
-    batch_size: int = 256,
 ) -> List[Tuple[int, int, Tuple[int, int], Tuple[int, int], float]]:
-    """Worker function for CPU-based SSIM comparison."""
-    different_pairs_chunk = []
+    """Worker function for CPU-based SSIM comparison on a batch of pairs."""
     ssim_module = SSIM(
         data_range=255.0, size_average=False, channel=3, nonnegative_ssim=True
     )
 
-    for i in range(0, len(indices_chunk), batch_size):
-        batch_indices = indices_chunk[i : i + batch_size]
-        if not batch_indices:
-            break
+    if not batch_indices:
+        return []
 
-        indices1 = [idx[0] for idx in batch_indices]
-        indices2 = [idx[1] for idx in batch_indices]
+    batch_indices_np = np.array(batch_indices, dtype=np.int32)
 
-        tensor1 = units_tensor[indices1]
-        tensor2 = units_tensor[indices2]
+    indices1 = batch_indices_np[:, 0].tolist()
+    indices2 = batch_indices_np[:, 1].tolist()
 
-        ssim_scores = ssim_module(tensor1, tensor2)
+    tensor1 = units_tensor[indices1]
+    tensor2 = units_tensor[indices2]
 
-        below_threshold_mask = ssim_scores < threshold
-        below_threshold_indices_in_batch = torch.where(below_threshold_mask)[0]
+    ssim_scores = ssim_module(tensor1, tensor2)
 
-        for idx_in_batch in below_threshold_indices_in_batch:
-            original_pair_index_in_chunk = i + idx_in_batch.item()
-            pair_indices = indices_chunk[original_pair_index_in_chunk]
-            pos1 = positions[pair_indices[0]]
-            pos2 = positions[pair_indices[1]]
-            score = ssim_scores[idx_in_batch].item()
-            different_pairs_chunk.append(
-                (pair_indices[0], pair_indices[1], pos1, pos2, score)
+    below_threshold_mask = ssim_scores < threshold
+    below_threshold_indices_in_batch_tensor = torch.where(below_threshold_mask)[0]
+
+    different_pairs_batch = []
+    if len(below_threshold_indices_in_batch_tensor) > 0:
+        ssim_scores_np = ssim_scores.numpy()
+        below_threshold_indices_np = below_threshold_indices_in_batch_tensor.numpy()
+
+        results_np = _collect_diff_pairs_from_batch_np(
+            batch_indices_np,
+            positions_np,
+            ssim_scores_np,
+            below_threshold_indices_np,
+        )
+        for row in results_np:
+            idx1, idx2, p1r, p1c, p2r, p2c, score = row
+            different_pairs_batch.append(
+                (int(idx1), int(idx2), (int(p1r), int(p1c)), (int(p2r), int(p2c)), score)
             )
-    return different_pairs_chunk
+    return different_pairs_batch
 
 
 def find_different_units_gpu(
@@ -130,12 +183,14 @@ def find_different_units_gpu(
     start_time = time.time()
     positions = [pos for pos, unit in image_units]
     units = [unit for pos, unit in image_units]
+    positions_np = np.array(positions, dtype=np.int32)
 
     units_tensor = torch.from_numpy(np.array(units)).float().to(device)
     # (N, H, W, C) -> (N, C, H, W)
     units_tensor = units_tensor.permute(0, 3, 1, 2)
 
     indices = list(itertools.combinations(range(len(image_units)), 2))
+    indices_np = np.array(indices, dtype=np.int32)
 
     different_pairs = []
     batch_size = 1024  # Adjustable batch size
@@ -143,31 +198,45 @@ def find_different_units_gpu(
     ssim_module = SSIM(
         data_range=255.0, size_average=False, channel=3, nonnegative_ssim=True
     )
-    for i in range(0, len(indices), batch_size):
-        batch_indices = indices[i : i + batch_size]
-        if not batch_indices:
-            break
+    with tqdm(
+        total=num_comparisons, desc="Processing", bar_format="{desc}: {n_fmt}/{total_fmt}"
+    ) as pbar:
+        for i in range(0, len(indices), batch_size):
+            batch_indices_np_slice = indices_np[i : i + batch_size]
+            if len(batch_indices_np_slice) == 0:
+                break
 
-        indices1 = [idx[0] for idx in batch_indices]
-        indices2 = [idx[1] for idx in batch_indices]
+            indices1 = batch_indices_np_slice[:, 0].tolist()
+            indices2 = batch_indices_np_slice[:, 1].tolist()
 
-        tensor1 = units_tensor[indices1]
-        tensor2 = units_tensor[indices2]
+            tensor1 = units_tensor[indices1]
+            tensor2 = units_tensor[indices2]
 
-        ssim_scores = ssim_module(tensor1, tensor2)
+            ssim_scores = ssim_module(tensor1, tensor2)
 
-        below_threshold_mask = ssim_scores < threshold
-        below_threshold_indices_in_batch = torch.where(below_threshold_mask)[0]
+            below_threshold_mask = ssim_scores < threshold
+            below_threshold_indices_in_batch_tensor = torch.where(below_threshold_mask)[
+                0
+            ]
 
-        for idx_in_batch in below_threshold_indices_in_batch:
-            original_pair_index = i + idx_in_batch.item()
-            pair_indices = indices[original_pair_index]
-            pos1 = positions[pair_indices[0]]
-            pos2 = positions[pair_indices[1]]
-            score = ssim_scores[idx_in_batch].item()
-            different_pairs.append(
-                (pair_indices[0], pair_indices[1], pos1, pos2, score)
-            )
+            if len(below_threshold_indices_in_batch_tensor) > 0:
+                ssim_scores_np = ssim_scores.cpu().numpy()
+                below_threshold_indices_np = (
+                    below_threshold_indices_in_batch_tensor.cpu().numpy()
+                )
+
+                results_np = _collect_diff_pairs_from_batch_np(
+                    batch_indices_np_slice,
+                    positions_np,
+                    ssim_scores_np,
+                    below_threshold_indices_np,
+                )
+                for row in results_np:
+                    idx1, idx2, p1r, p1c, p2r, p2c, score = row
+                    different_pairs.append(
+                        (int(idx1), int(idx2), (int(p1r), int(p1c)), (int(p2r), int(p2c)), score)
+                    )
+            pbar.update(len(batch_indices_np_slice))
 
     end_time = time.time()
     elapsed_time = end_time - start_time
@@ -215,6 +284,7 @@ def find_different_units_cpu(
     start_time = time.time()
     positions = [pos for pos, unit in image_units]
     units = [unit for pos, unit in image_units]
+    positions_np = np.array(positions, dtype=np.int32)
 
     units_tensor = torch.from_numpy(np.array(units)).float()
     # (N, H, W, C) -> (N, C, H, W)
@@ -223,21 +293,29 @@ def find_different_units_cpu(
     indices = list(itertools.combinations(range(len(image_units)), 2))
 
     num_processes = multiprocessing.cpu_count()
-    print(f"Using {num_processes} CPU cores for parallel processing.")
 
-    chunk_size = (len(indices) + num_processes - 1) // num_processes
-    chunks = [indices[i : i + chunk_size] for i in range(0, len(indices), chunk_size)]
+    batch_size = 256
+    batches = [
+        indices[i : i + batch_size] for i in range(0, len(indices), batch_size)
+    ]
+    different_pairs = []
 
     with multiprocessing.Pool(processes=num_processes) as pool:
         worker = partial(
-            _compare_pairs_worker,
+            _compare_batch_worker,
             units_tensor=units_tensor,
-            positions=positions,
+            positions_np=positions_np,
             threshold=threshold,
         )
-        results = pool.map(worker, chunks)
-
-    different_pairs = [pair for sublist in results for pair in sublist]
+        with tqdm(
+            total=num_comparisons,
+            desc="Processing",
+            bar_format="{desc}: {n_fmt}/{total_fmt}",
+        ) as pbar:
+            for i, result_batch in enumerate(pool.imap(worker, batches)):
+                if result_batch:
+                    different_pairs.extend(result_batch)
+                pbar.update(len(batches[i]))
 
     end_time = time.time()
     elapsed_time = end_time - start_time
