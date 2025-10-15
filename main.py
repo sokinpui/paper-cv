@@ -1,5 +1,6 @@
 import argparse
 import itertools
+import concurrent.futures
 import os
 import time
 import shutil
@@ -19,7 +20,7 @@ def save_different_pairs(
     output_dir: str = "output",
 ) -> None:
     """
-    Saves the different image unit pairs to the specified directory.
+    Saves the different image unit pairs to the specified directory using multiple threads.
 
     Args:
         different_pairs (list): A list of tuples, where each tuple contains
@@ -35,11 +36,15 @@ def save_different_pairs(
         f"\nSaving {len(different_pairs)} different pairs to '{output_dir}' directory..."
     )
 
-    for i, (idx1, idx2, pos1, pos2, score) in enumerate(different_pairs):
+    def _save_single_pair(args):
+        i, (idx1, idx2, _, _, _) = args
         pair_dir = os.path.join(output_dir, f"pair_{i+1}")
         os.makedirs(pair_dir, exist_ok=True)
         Image.fromarray(units[idx1]).save(os.path.join(pair_dir, "img1.png"))
         Image.fromarray(units[idx2]).save(os.path.join(pair_dir, "img2.png"))
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        executor.map(_save_single_pair, enumerate(different_pairs))
 
     print("Done saving.")
 
