@@ -61,7 +61,7 @@ def _compare_pairs_worker(
     """Worker function for CPU-based SSIM comparison."""
     different_pairs_chunk = []
     ssim_module = SSIM(
-        data_range=255.0, size_average=False, channel=1, nonnegative_ssim=True
+        data_range=255.0, size_average=False, channel=3, nonnegative_ssim=True
     )
 
     for i in range(0, len(indices_chunk), batch_size):
@@ -132,7 +132,8 @@ def find_different_units_gpu(
     units = [unit for pos, unit in image_units]
 
     units_tensor = torch.from_numpy(np.array(units)).float().to(device)
-    units_tensor = units_tensor.unsqueeze(1)  # Add channel dimension: (N, 1, H, W)
+    # (N, H, W, C) -> (N, C, H, W)
+    units_tensor = units_tensor.permute(0, 3, 1, 2)
 
     indices = list(itertools.combinations(range(len(image_units)), 2))
 
@@ -140,7 +141,7 @@ def find_different_units_gpu(
     batch_size = 1024  # Adjustable batch size
 
     ssim_module = SSIM(
-        data_range=255.0, size_average=False, channel=1, nonnegative_ssim=True
+        data_range=255.0, size_average=False, channel=3, nonnegative_ssim=True
     )
     for i in range(0, len(indices), batch_size):
         batch_indices = indices[i : i + batch_size]
@@ -216,7 +217,8 @@ def find_different_units_cpu(
     units = [unit for pos, unit in image_units]
 
     units_tensor = torch.from_numpy(np.array(units)).float()
-    units_tensor = units_tensor.unsqueeze(1)  # Add channel dimension: (N, 1, H, W)
+    # (N, H, W, C) -> (N, C, H, W)
+    units_tensor = units_tensor.permute(0, 3, 1, 2)
 
     indices = list(itertools.combinations(range(len(image_units)), 2))
 

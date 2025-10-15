@@ -24,7 +24,7 @@ def divide_image_into_units(
         print(f"Error: Image file not found at {image_path}")
         return []
 
-    image = image.convert("L")
+    image = image.convert("RGB")
     width, height = image.size
     unit_width, unit_height = unit_size
     image_units = []
