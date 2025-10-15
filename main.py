@@ -1,13 +1,47 @@
 import argparse
 import itertools
+import os
 import time
-from typing import Tuple
+import shutil
+from typing import List, Tuple
 
 import numpy as np
 import torch
+from PIL import Image
 from pytorch_msssim import SSIM
 
 from utils.image_processor import divide_image_into_units
+
+
+def save_different_pairs(
+    different_pairs: List[Tuple[int, int, Tuple[int, int], Tuple[int, int], float]],
+    units: List[np.ndarray],
+    output_dir: str = "output",
+) -> None:
+    """
+    Saves the different image unit pairs to the specified directory.
+
+    Args:
+        different_pairs (list): A list of tuples, where each tuple contains
+                                (index1, index2, pos1, pos2, score).
+        units (list): The list of all image units (numpy arrays).
+        output_dir (str): The directory to save the output pairs.
+    """
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    os.makedirs(output_dir)
+
+    print(
+        f"\nSaving {len(different_pairs)} different pairs to '{output_dir}' directory..."
+    )
+
+    for i, (idx1, idx2, pos1, pos2, score) in enumerate(different_pairs):
+        pair_dir = os.path.join(output_dir, f"pair_{i+1}")
+        os.makedirs(pair_dir, exist_ok=True)
+        Image.fromarray(units[idx1]).save(os.path.join(pair_dir, "img1.png"))
+        Image.fromarray(units[idx2]).save(os.path.join(pair_dir, "img2.png"))
+
+    print("Done saving.")
 
 
 def find_different_units(
@@ -38,6 +72,7 @@ def find_different_units(
 
     print("This may take a while...")
 
+    start_time = time.time()
     positions = [pos for pos, unit in image_units]
     units = [unit for pos, unit in image_units]
 
@@ -49,7 +84,6 @@ def find_different_units(
     different_pairs = []
     batch_size = 1024  # Adjustable batch size
 
-    start_time = time.time()
     ssim_module = SSIM(
         data_range=255.0, size_average=False, channel=1, nonnegative_ssim=True
     )
@@ -75,7 +109,9 @@ def find_different_units(
             pos1 = positions[pair_indices[0]]
             pos2 = positions[pair_indices[1]]
             score = ssim_scores[idx_in_batch].item()
-            different_pairs.append((pos1, pos2, score))
+            different_pairs.append(
+                (pair_indices[0], pair_indices[1], pos1, pos2, score)
+            )
             print(f"  - Unit at {pos1} and Unit at {pos2}, SSIM: {score:.4f}")
 
     end_time = time.time()
@@ -89,8 +125,7 @@ def find_different_units(
         print("No significant differences found between any units.")
     else:
         print(f"\nFound {len(different_pairs)} pairs with SSIM below {threshold}:")
-        # for pos1, pos2, ssim_score in different_pairs:
-        #     print(f"  - Unit at {pos1} and Unit at {pos2}, SSIM: {ssim_score:.4f}")
+        save_different_pairs(different_pairs, units)
 
 
 def main() -> None:
