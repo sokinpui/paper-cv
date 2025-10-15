@@ -25,18 +25,16 @@ def divide_image_into_units(
         return []
 
     image = image.convert("RGB")
+    image_np = np.array(image)
     width, height = image.size
     unit_width, unit_height = unit_size
     image_units = []
 
     for i in range(height // unit_height):
         for j in range(width // unit_width):
-            left = j * unit_width
             top = i * unit_height
-            right = left + unit_width
-            bottom = top + unit_height
-            box = (left, top, right, bottom)
-            unit = image.crop(box)
-            image_units.append(((i, j), np.array(unit)))
+            left = j * unit_width
+            unit = image_np[top : top + unit_height, left : left + unit_width]
+            image_units.append(((i, j), unit))
 
     return image_units

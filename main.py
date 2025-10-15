@@ -99,6 +99,67 @@ def save_different_pairs(
     print("Done saving.")
 
 
+_worker_ssim_module = None
+_worker_units_tensor = None
+_worker_positions_np = None
+_worker_threshold = None
+
+
+def _init_worker_cpu(
+    units_tensor: torch.Tensor, positions_np: np.ndarray, threshold: float
+):
+    """Initializes a worker process for CPU-based comparison."""
+    global _worker_ssim_module, _worker_units_tensor, _worker_positions_np, _worker_threshold
+    _worker_ssim_module = SSIM(
+        data_range=255.0, size_average=False, channel=3, nonnegative_ssim=True
+    )
+    _worker_units_tensor = units_tensor
+    _worker_positions_np = positions_np
+    _worker_threshold = threshold
+
+
+def _compare_batch_worker_cpu(
+    batch_indices: List[Tuple[int, int]],
+) -> List[Tuple[int, int, Tuple[int, int], Tuple[int, int], float]]:
+    """Worker function for CPU-based SSIM comparison on a batch of pairs."""
+    # Uses global variables set by _init_worker_cpu
+    global _worker_ssim_module, _worker_units_tensor, _worker_positions_np, _worker_threshold
+
+    if not batch_indices:
+        return []
+
+    batch_indices_np = np.array(batch_indices, dtype=np.int32)
+
+    indices1 = batch_indices_np[:, 0].tolist()
+    indices2 = batch_indices_np[:, 1].tolist()
+
+    tensor1 = _worker_units_tensor[indices1]
+    tensor2 = _worker_units_tensor[indices2]
+
+    ssim_scores = _worker_ssim_module(tensor1, tensor2)
+
+    below_threshold_mask = ssim_scores < _worker_threshold
+    below_threshold_indices_in_batch_tensor = torch.where(below_threshold_mask)[0]
+
+    different_pairs_batch = []
+    if len(below_threshold_indices_in_batch_tensor) > 0:
+        ssim_scores_np = ssim_scores.numpy()
+        below_threshold_indices_np = below_threshold_indices_in_batch_tensor.numpy()
+
+        results_np = _collect_diff_pairs_from_batch_np(
+            batch_indices_np,
+            _worker_positions_np,
+            ssim_scores_np,
+            below_threshold_indices_np,
+        )
+        for row in results_np:
+            idx1, idx2, p1r, p1c, p2r, p2c, score = row
+            different_pairs_batch.append(
+                (int(idx1), int(idx2), (int(p1r), int(p1c)), (int(p2r), int(p2c)), score)
+            )
+    return different_pairs_batch
+
+
 def _compare_batch_worker(
     batch_indices: List[Tuple[int, int]],
     units_tensor: torch.Tensor,
@@ -189,8 +250,7 @@ def find_different_units_gpu(
     # (N, H, W, C) -> (N, C, H, W)
     units_tensor = units_tensor.permute(0, 3, 1, 2)
 
-    indices = list(itertools.combinations(range(len(image_units)), 2))
-    indices_np = np.array(indices, dtype=np.int32)
+    indices_iter = itertools.combinations(range(len(image_units)), 2)
 
     different_pairs = []
     batch_size = 1024  # Adjustable batch size
@@ -201,8 +261,10 @@ def find_different_units_gpu(
     with tqdm(
         total=num_comparisons, desc="Processing", bar_format="{desc}: {n_fmt}/{total_fmt}"
     ) as pbar:
-        for i in range(0, len(indices), batch_size):
-            batch_indices_np_slice = indices_np[i : i + batch_size]
+        while True:
+            batch_indices = list(itertools.islice(indices_iter, batch_size))
+            batch_indices_np_slice = np.array(batch_indices, dtype=np.int32)
+
             if len(batch_indices_np_slice) == 0:
                 break
 
@@ -290,32 +352,41 @@ def find_different_units_cpu(
     # (N, H, W, C) -> (N, C, H, W)
     units_tensor = units_tensor.permute(0, 3, 1, 2)
 
-    indices = list(itertools.combinations(range(len(image_units)), 2))
-
     num_processes = multiprocessing.cpu_count()
-
     batch_size = 256
-    batches = [
-        indices[i : i + batch_size] for i in range(0, len(indices), batch_size)
-    ]
+
+    combinations_iter = itertools.combinations(range(len(image_units)), 2)
+
     different_pairs = []
 
-    with multiprocessing.Pool(processes=num_processes) as pool:
-        worker = partial(
-            _compare_batch_worker,
-            units_tensor=units_tensor,
-            positions_np=positions_np,
-            threshold=threshold,
-        )
+    initializer = partial(
+        _init_worker_cpu,
+        units_tensor=units_tensor,
+        positions_np=positions_np,
+        threshold=threshold,
+    )
+
+    with multiprocessing.Pool(
+        processes=num_processes, initializer=initializer
+    ) as pool:
         with tqdm(
             total=num_comparisons,
             desc="Processing",
             bar_format="{desc}: {n_fmt}/{total_fmt}",
         ) as pbar:
-            for i, result_batch in enumerate(pool.imap(worker, batches)):
+            results = []
+            while True:
+                batch = list(itertools.islice(combinations_iter, batch_size))
+                if not batch:
+                    break
+                res = pool.apply_async(_compare_batch_worker_cpu, (batch,))
+                results.append((res, len(batch)))
+
+            for res, length in results:
+                result_batch = res.get()
                 if result_batch:
                     different_pairs.extend(result_batch)
-                pbar.update(len(batches[i]))
+                pbar.update(length)
 
     end_time = time.time()
     elapsed_time = end_time - start_time
